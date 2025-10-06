@@ -1,3 +1,7 @@
 [submodule "detectron2"]
 	path = detectron2
 	url = https://github.com/facebookresearch/detectron2
+[submodule "apex"]
+	path = apex
+	url = https://github.com/xiaohuirong/apex
+	branch = fix

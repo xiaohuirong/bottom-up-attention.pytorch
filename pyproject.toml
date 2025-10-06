@@ -1,0 +1,22 @@
+[project]
+name = "bottom-up-attention-pytorch"
+version = "0.1.0"
+description = "A PyTorch reimplementation of bottom-up-attention models "
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "torch @ https://download.pytorch.org/whl/cu129/torch-2.1.0%2Bcu129-cp310-cp310-linux_x86_64.whl",
+    "torchvision @ https://download.pytorch.org/whl/cu129/torchvision-0.16.0%2Bcu129-cp310-cp310-linux_x86_64.whl",
+    "opencv-python-headless",
+    "Pillow==8.1.0",
+    "detectron2 @ file://./detectron2",
+    "apex @ file://./apex",
+    "bottom-up-attention.pytorch @ file://."
+]
+
+[build-system]
+requires = [
+    "setuptools",
+    "wheel",
+    "ninja"
+]

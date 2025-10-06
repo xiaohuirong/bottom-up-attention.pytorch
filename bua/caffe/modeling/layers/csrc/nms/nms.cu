@@ -1,14 +1,19 @@
 // Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
-
-#include <THC/THC.h>
-#include <THC/THCDeviceUtils.cuh>
+#include <ATen/cuda/CUDAUtils.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDACachingAllocator.h>
 
 #include <vector>
 #include <iostream>
 
 int const threadsPerBlock = sizeof(unsigned long long) * 8;
+
+template <typename T>
+__host__ __device__ __forceinline__ T THCCeilDiv(T a, T b) {
+  return (a + b - 1) / b;
+}
 
 __device__ inline float devIoU(float const * const a, float const * const b) {
   float left = max(a[0], b[0]), right = min(a[2], b[2]);
@@ -70,6 +75,9 @@ __global__ void nms_kernel(const int n_boxes, const float nms_overlap_thresh,
 at::Tensor nms_cuda(const at::Tensor boxes, float nms_overlap_thresh) {
   using scalar_t = float;
   AT_ASSERTM(boxes.type().is_cuda(), "boxes must be a CUDA tensor");
+  at::cuda::CUDAGuard device_guard(boxes.device());
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
   auto scores = boxes.select(1, 4);
   auto order_t = std::get<1>(scores.sort(0, /* descending=*/true));
   auto boxes_sorted = boxes.index_select(0, order_t);
@@ -78,35 +86,36 @@ at::Tensor nms_cuda(const at::Tensor boxes, float nms_overlap_thresh) {
 
   const int col_blocks = THCCeilDiv(boxes_num, threadsPerBlock);
 
-  scalar_t* boxes_dev = boxes_sorted.data<scalar_t>();
-
-  THCState *state = at::globalContext().lazyInitCUDA(); // TODO replace with getTHCState
+  scalar_t* boxes_dev = boxes_sorted.data_ptr<scalar_t>();
 
   unsigned long long* mask_dev = NULL;
-  //THCudaCheck(THCudaMalloc(state, (void**) &mask_dev,
-  //                      boxes_num * col_blocks * sizeof(unsigned long long)));
-
-  mask_dev = (unsigned long long*) THCudaMalloc(state, boxes_num * col_blocks * sizeof(unsigned long long));
+  mask_dev = (unsigned long long*) c10::cuda::CUDACachingAllocator::raw_alloc(
+      boxes_num * col_blocks * sizeof(unsigned long long));
 
   dim3 blocks(THCCeilDiv(boxes_num, threadsPerBlock),
               THCCeilDiv(boxes_num, threadsPerBlock));
   dim3 threads(threadsPerBlock);
-  nms_kernel<<<blocks, threads>>>(boxes_num,
+  nms_kernel<<<blocks, threads, 0, stream>>>(boxes_num,
                                   nms_overlap_thresh,
                                   boxes_dev,
                                   mask_dev);
 
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+
   std::vector<unsigned long long> mask_host(boxes_num * col_blocks);
-  THCudaCheck(cudaMemcpy(&mask_host[0],
+  C10_CUDA_CHECK(cudaMemcpyAsync(&mask_host[0],
                         mask_dev,
                         sizeof(unsigned long long) * boxes_num * col_blocks,
-                        cudaMemcpyDeviceToHost));
+                        cudaMemcpyDeviceToHost,
+                        stream));
+
+  C10_CUDA_CHECK(cudaStreamSynchronize(stream));
 
   std::vector<unsigned long long> remv(col_blocks);
   memset(&remv[0], 0, sizeof(unsigned long long) * col_blocks);
 
   at::Tensor keep = at::empty({boxes_num}, boxes.options().dtype(at::kLong).device(at::kCPU));
-  int64_t* keep_out = keep.data<int64_t>();
+  int64_t* keep_out = keep.data_ptr<int64_t>();
 
   int num_to_keep = 0;
   for (int i = 0; i < boxes_num; i++) {
@@ -122,10 +131,11 @@ at::Tensor nms_cuda(const at::Tensor boxes, float nms_overlap_thresh) {
     }
   }
 
-  THCudaFree(state, mask_dev);
+  c10::cuda::CUDACachingAllocator::raw_delete(mask_dev);
   // TODO improve this part
   return std::get<0>(order_t.index({
                        keep.narrow(/*dim=*/0, /*start=*/0, /*length=*/num_to_keep).to(
                          order_t.device(), keep.scalar_type())
                      }).sort(0, false));
 }
+
