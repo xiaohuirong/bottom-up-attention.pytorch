@@ -10,7 +10,9 @@ dependencies = [
     "opencv-python-headless",
     "Pillow==8.1.0",
     "apex",
-    "detectron2"
+    "detectron2",
+    "scikit-image>=0.19.3",
+    "numpy==1.21.6",
 ]
 
 [build-system]
